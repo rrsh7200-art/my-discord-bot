@@ -1,11 +1,10 @@
 /**
  * ============================================================
- * BOT: Event Organizer with Anti-Duplicate Counter
+ * BOT: Event Organizer with Anti-Duplicate Counter & Keep-Alive
  * ============================================================
  */
 
 // 1. استدعاء المكتبات الضرورية
-// ==========================================
 const express = require('express');
 const { 
     Client, 
@@ -23,11 +22,12 @@ const {
 
 // 2. إعدادات البوت والسيرفر (CONFIG)
 // ==========================================
+// تم إصلاح الخطأ هنا: نستخدم النقطتين (:) بدلاً من (=) وبدون const
 const CONFIG = {
-    // لاحظ: نستخدم نقطتين رأسيتين (:) ولا نكتب const
-    TOKEN: process.env.TOKEN,
+    // التوكن يتم جلبه من متغيرات النظام (Environment Variables)
+    TOKEN: process.env.TOKEN, 
     
-    // إعدادات القنوات والرتب
+    // إعدادات القنوات والرتب (مأخوذة من صورك)
     CHANNELS: {
         PARTICIPANTS: '1448832815658700820' // آيدي روم المشاركات
     },
@@ -56,7 +56,7 @@ const CONFIG = {
 let participantCount = 0; // عداد المشاركين
 const participantsData = new Map(); // تخزين مؤقت: UserID -> MessageID
 
-// 4. إعداد السيرفر الوهمي (Keep-Alive)
+// 4. إعداد السيرفر الوهمي (لإبقاء البوت يعمل 24 ساعة)
 // ==========================================
 const app = express();
 app.get('/', (req, res) => res.send('Bot is running properly! 🤖'));
@@ -79,7 +79,7 @@ const client = new Client({
 // ==========================================
 
 // --- [حدث التشغيل: Ready] ---
-// يسترجع آخر رقم تسلسلي لمنع التكرار
+// يسترجع آخر رقم تسلسلي لمنع التكرار عند إعادة التشغيل
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     
@@ -87,10 +87,12 @@ client.once('ready', async () => {
         const channel = await client.channels.fetch(CONFIG.CHANNELS.PARTICIPANTS).catch(() => null);
         if (channel) {
             console.log("🔄 جاري فحص الرسائل القديمة لاستعادة العداد...");
+            // نجلب آخر 50 رسالة للبحث عن آخر رقم
             const messages = await channel.messages.fetch({ limit: 50 });
             let maxNum = 0;
 
             messages.forEach(msg => {
+                // نتأكد أن الرسالة من البوت نفسه
                 if (msg.author.id === client.user.id) {
                     const match = msg.content.match(/المتسابق رقم #(\d+)/);
                     if (match) {
@@ -189,7 +191,7 @@ async function handleRegister(interaction) {
 
     if (!channel) {
         participantCount--; // تراجع عن الزيادة في حال الخطأ
-        return interaction.reply({ content: '❌ حدث خطأ: لم يتم العثور على روم المشاركات.', ephemeral: true });
+        return interaction.reply({ content: '❌ حدث خطأ: لم يتم العثور على روم المشاركات. تأكد من الآيدي', ephemeral: true });
     }
 
     try {
@@ -208,7 +210,7 @@ async function handleRegister(interaction) {
 // دالة الانسحاب
 async function handleWithdraw(interaction) {
     if (!participantsData.has(interaction.user.id)) {
-        return interaction.reply({ content: '⚠️ أنت لست مسجلاً في المسابقة حالياً.', ephemeral: true });
+        return interaction.reply({ content: '⚠️ أنت لست مسجلاً في المسابقة حالياً (أو تم إعادة تشغيل البوت وفقدان الذاكرة المؤقتة).', ephemeral: true });
     }
 
     const msgId = participantsData.get(interaction.user.id);
