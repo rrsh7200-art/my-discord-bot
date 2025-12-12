@@ -1,6 +1,6 @@
 /**
  * ============================================================
- * BOT: Event Organizer with Anti-Duplicate Counter & Keep-Alive
+ * BOT: Event Organizer (Anti-Duplicate + Auto-Clean on Leave)
  * ============================================================
  */
 
@@ -22,12 +22,11 @@ const {
 
 // 2. إعدادات البوت والسيرفر (CONFIG)
 // ==========================================
-// تم إصلاح الخطأ هنا: نستخدم النقطتين (:) بدلاً من (=) وبدون const
 const CONFIG = {
-    // التوكن يتم جلبه من متغيرات النظام (Environment Variables)
+    // التوكن يتم جلبه من متغيرات النظام
     TOKEN: process.env.TOKEN, 
     
-    // إعدادات القنوات والرتب (مأخوذة من صورك)
+    // إعدادات القنوات والرتب
     CHANNELS: {
         PARTICIPANTS: '1448832815658700820' // آيدي روم المشاركات
     },
@@ -69,8 +68,8 @@ const client = new Client({
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent,
-        GatewayIntentBits.GuildMembers,
-        GatewayIntentBits.GuildMessageReactions
+        GatewayIntentBits.GuildMembers,         // ضروري لمعرفة من غادر
+        GatewayIntentBits.GuildMessageReactions // ضروري لحذف الرياكشن
     ],
     partials: [Partials.Message, Partials.Channel, Partials.Reaction]
 });
@@ -79,7 +78,6 @@ const client = new Client({
 // ==========================================
 
 // --- [حدث التشغيل: Ready] ---
-// يسترجع آخر رقم تسلسلي لمنع التكرار عند إعادة التشغيل
 client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     
@@ -87,12 +85,10 @@ client.once('ready', async () => {
         const channel = await client.channels.fetch(CONFIG.CHANNELS.PARTICIPANTS).catch(() => null);
         if (channel) {
             console.log("🔄 جاري فحص الرسائل القديمة لاستعادة العداد...");
-            // نجلب آخر 50 رسالة للبحث عن آخر رقم
             const messages = await channel.messages.fetch({ limit: 50 });
             let maxNum = 0;
 
             messages.forEach(msg => {
-                // نتأكد أن الرسالة من البوت نفسه
                 if (msg.author.id === client.user.id) {
                     const match = msg.content.match(/المتسابق رقم #(\d+)/);
                     if (match) {
@@ -114,17 +110,47 @@ client.once('ready', async () => {
     }
 });
 
+// --- [حدث مغادرة العضو: GuildMemberRemove] (مهم جداً) ---
+client.on('guildMemberRemove', async (member) => {
+    try {
+        const channel = client.channels.cache.get(CONFIG.CHANNELS.PARTICIPANTS);
+        if (!channel) return;
+
+        // نجلب آخر 100 رسالة لفحصها
+        const messages = await channel.messages.fetch({ limit: 100 });
+
+        messages.forEach(async (msg) => {
+            // نتأكد أن الرسالة من البوت أولاً
+            if (msg.author.id === client.user.id) {
+                
+                // 1. إذا كان المغادر هو صاحب المشاركة -> نحذف المنشور
+                if (msg.mentions.users.has(member.id)) {
+                    await msg.delete().catch(() => {});
+                    participantsData.delete(member.id);
+                    console.log(`🗑️ تم حذف مشاركة العضو ${member.user.tag} لأنه غادر السيرفر.`);
+                } 
+                // 2. إذا لم يكن المشارك، نفحص إذا كان قد وضع لايك -> نحذفه
+                else {
+                    const reaction = msg.reactions.cache.get('❤️');
+                    if (reaction) {
+                        // محاولة إزالة تفاعل العضو المغادر
+                        await reaction.users.remove(member.id).catch(() => {});
+                    }
+                }
+            }
+        });
+    } catch (error) {
+        console.error("Error in cleaning up leaver data:", error);
+    }
+});
+
 // --- [حدث الرسائل: MessageCreate] ---
-// الخاص بإنشاء لوحة التحكم (!setup)
 client.on('messageCreate', async (message) => {
     if (message.content === '!setup') {
-        // التحقق من صلاحية الأدمن
         if (!message.member.permissions.has('Administrator')) return;
         
-        // حذف رسالة الأمر
         message.delete().catch(() => {});
 
-        // بناء الرسالة (Embed)
         const embed = new EmbedBuilder()
             .setTitle('مسابقة على ملفات السلطان') 
             .setDescription(`${CONFIG.TEXTS.DESCRIPTION}\n• جائزة المسابقة: ${CONFIG.TEXTS.DEFAULT_PRIZE}.`)
@@ -132,7 +158,6 @@ client.on('messageCreate', async (message) => {
             .setImage(CONFIG.TEXTS.IMAGE_URL) 
             .setFooter({ text: 'Sultan Events', iconURL: client.user.displayAvatarURL() });
 
-        // بناء الأزرار
         const row = new ActionRowBuilder().addComponents(
             new ButtonBuilder().setCustomId('register_btn').setLabel('تسجيل').setStyle(ButtonStyle.Success).setEmoji('✅'),
             new ButtonBuilder().setCustomId('withdraw_btn').setLabel('انسحاب').setStyle(ButtonStyle.Danger).setEmoji('🖍️'),
@@ -144,32 +169,24 @@ client.on('messageCreate', async (message) => {
 });
 
 // --- [حدث التفاعل: InteractionCreate] ---
-// التعامل مع الأزرار والمودال
 client.on('interactionCreate', async (interaction) => {
     
-    // أ) التعامل مع الأزرار
     if (interaction.isButton()) {
-        const { customId, user, member } = interaction;
+        const { customId } = interaction;
 
         switch (customId) {
-            // 1. زر التسجيل
             case 'register_btn':
                 await handleRegister(interaction);
                 break;
-            
-            // 2. زر الانسحاب
             case 'withdraw_btn':
                 await handleWithdraw(interaction);
                 break;
-
-            // 3. زر الإعدادات (يتطلب رتبة)
             case 'settings_btn':
                 await handleSettingsOpen(interaction);
                 break;
         }
     }
 
-    // ب) التعامل مع المودال (حفظ التعديلات)
     if (interaction.type === InteractionType.ModalSubmit) {
         if (interaction.customId === 'settings_modal') {
             await handleSettingsSubmit(interaction);
@@ -186,12 +203,12 @@ async function handleRegister(interaction) {
         return interaction.reply({ content: '⛔ عذراً، أنت مسجل في المسابقة بالفعل!', ephemeral: true });
     }
 
-    participantCount++; // زيادة الرقم
+    participantCount++; 
     const channel = client.channels.cache.get(CONFIG.CHANNELS.PARTICIPANTS);
 
     if (!channel) {
-        participantCount--; // تراجع عن الزيادة في حال الخطأ
-        return interaction.reply({ content: '❌ حدث خطأ: لم يتم العثور على روم المشاركات. تأكد من الآيدي', ephemeral: true });
+        participantCount--; 
+        return interaction.reply({ content: '❌ حدث خطأ: لم يتم العثور على روم المشاركات.', ephemeral: true });
     }
 
     try {
@@ -210,7 +227,7 @@ async function handleRegister(interaction) {
 // دالة الانسحاب
 async function handleWithdraw(interaction) {
     if (!participantsData.has(interaction.user.id)) {
-        return interaction.reply({ content: '⚠️ أنت لست مسجلاً في المسابقة حالياً (أو تم إعادة تشغيل البوت وفقدان الذاكرة المؤقتة).', ephemeral: true });
+        return interaction.reply({ content: '⚠️ أنت لست مسجلاً في المسابقة حالياً.', ephemeral: true });
     }
 
     const msgId = participantsData.get(interaction.user.id);
